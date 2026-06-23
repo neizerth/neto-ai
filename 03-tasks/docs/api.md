@@ -1,40 +1,59 @@
-# API-спецификация
+# API
 
-Базовый URL: `http://localhost:8000` (настраивается через `config/settings.py`).
+Базовый URL: `http://localhost:8000` (при запуске через uvicorn на порту 8000).
 
-Интерактивная документация: `http://localhost:8000/docs` (Swagger UI).
+Префикса версии (`/api/v1`) нет — эндпоинты доступны с корня.
+
+## Обзор эндпоинтов
+
+| Метод | Путь | Код успеха | Описание |
+|-------|------|------------|----------|
+| `GET` | `/health` | 200 | Проверка доступности сервиса |
+| `POST` | `/tasks` | 201 | Создать задачу |
+| `GET` | `/tasks` | 200 | Список всех задач |
+| `GET` | `/tasks/{task_id}` | 200 | Получить задачу по ID |
+
+Аутентификация не требуется.
 
 ---
 
-## `POST /tasks`
+## GET /health
 
-Создать новую задачу.
+Liveness-check приложения.
 
-### Request
+**Ответ 200**
 
-**Headers:**
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+## POST /tasks
+
+Создаёт новую задачу.
+
+**Заголовки**
 
 ```
 Content-Type: application/json
 ```
 
-**Body:**
+**Тело запроса** — см. [TaskCreate](./models.md#taskcreate--входной-dto)
 
-```json
-{
-  "title": "Настроить CI/CD",
-  "description": "Добавить GitHub Actions для автотестов",
-  "priority": 3
-}
+**Ответ 201** — `TaskResponse`
+
+```bash
+curl -X POST http://localhost:8000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Настроить CI/CD",
+    "description": "Добавить GitHub Actions для автотестов",
+    "priority": 3
+  }'
 ```
-
-| Поле | Тип | Обязательное | Описание |
-|------|-----|--------------|----------|
-| `title` | `string` | да | Название, 3–100 символов |
-| `description` | `string` | нет | Описание задачи |
-| `priority` | `integer` | да | Приоритет 1–5 |
-
-### Response `201 Created`
 
 ```json
 {
@@ -42,23 +61,19 @@ Content-Type: application/json
   "title": "Настроить CI/CD",
   "description": "Добавить GitHub Actions для автотестов",
   "priority": 3,
-  "created_at": "2026-06-23T12:00:00"
+  "created_at": "2026-06-23T12:00:00+00:00"
 }
 ```
 
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `id` | `int` | Сгенерированный идентификатор |
-| `title` | `string` | Название задачи |
-| `description` | `string \| null` | Описание |
-| `priority` | `int` | Приоритет 1–5 |
-| `created_at` | `string` | ISO 8601 |
+**Ответ 422** — ошибка валидации
 
-### Коды ошибок
+```bash
+curl -X POST http://localhost:8000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "ab", "priority": 3}'
+```
 
-#### `422 Unprocessable Entity`
-
-Ошибка валидации входных данных (автоматически через Pydantic/FastAPI).
+Типичный фрагмент ответа:
 
 ```json
 {
@@ -67,7 +82,8 @@ Content-Type: application/json
       "type": "string_too_short",
       "loc": ["body", "title"],
       "msg": "String should have at least 3 characters",
-      "input": "ab"
+      "input": "ab",
+      "ctx": {"min_length": 3}
     }
   ]
 }
@@ -75,228 +91,137 @@ Content-Type: application/json
 
 ---
 
-## `GET /tasks`
+## GET /tasks
 
-Получить список всех задач.
+Возвращает массив всех задач. Порядок соответствует порядку вставки в `dict` (в CPython 3.7+ — порядок добавления ключей). Явная сортировка не гарантируется спецификацией API.
 
-### Request
+**Ответ 200** — `TaskResponse[]`
 
-Параметры и тело отсутствуют.
-
-### Response `200 OK`
-
-```json
-[
-  {
-    "id": 1,
-    "title": "Настроить CI/CD",
-    "description": "Добавить GitHub Actions для автотестов",
-    "priority": 3,
-    "created_at": "2026-06-23T12:00:00"
-  },
-  {
-    "id": 2,
-    "title": "Написать документацию",
-    "description": null,
-    "priority": 2,
-    "created_at": "2026-06-23T12:05:00"
-  }
-]
-```
-
-Пустой список, если задач нет:
+Пустое хранилище:
 
 ```json
 []
 ```
 
+После создания двух задач:
+
+```bash
+curl http://localhost:8000/tasks
+```
+
+```json
+[
+  {
+    "id": 1,
+    "title": "Task one",
+    "description": null,
+    "priority": 1,
+    "created_at": "2026-06-23T12:00:00+00:00"
+  },
+  {
+    "id": 2,
+    "title": "Task two",
+    "description": null,
+    "priority": 2,
+    "created_at": "2026-06-23T12:01:00+00:00"
+  }
+]
+```
+
 ---
 
-## `GET /tasks/{task_id}`
+## GET /tasks/{task_id}
 
-Получить задачу по идентификатору.
+Возвращает одну задачу по числовому идентификатору.
 
-### Request
+**Параметры пути**
 
-| Параметр | Расположение | Тип | Обязательный | Описание |
-|----------|--------------|-----|--------------|----------|
-| `task_id` | path | `int` | да | Идентификатор задачи |
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `task_id` | `int` | ID задачи |
 
-### Response `200 OK`
+**Ответ 200** — `TaskResponse`
+
+```bash
+curl http://localhost:8000/tasks/1
+```
+
+**Ответ 404** — задача не найдена
+
+```bash
+curl http://localhost:8000/tasks/999
+```
 
 ```json
 {
-  "id": 1,
-  "title": "Настроить CI/CD",
-  "description": "Добавить GitHub Actions для автотестов",
-  "priority": 3,
-  "created_at": "2026-06-23T12:00:00"
+  "detail": {
+    "detail": "Task not found",
+    "task_id": 999
+  }
 }
-```
-
-### Коды ошибок
-
-#### `404 Not Found`
-
-Задача с указанным `task_id` не найдена.
-
-```json
-{
-  "detail": "Task not found",
-  "task_id": 42
-}
-```
-
-**Ограничения реализации:**
-
-- Использовать встроенный `HTTPException` FastAPI.
-- Не реализовывать глобальный middleware для этой цели.
-
-### Промпт: генерация эндпоинта получения задачи (GET)
-
-> Создай FastAPI-эндпоинт для получения задачи по идентификатору.
->
-> **Метод и путь:** `GET /tasks/{task_id}`
->
-> **Входные данные:**
-> - `task_id` (path, `int`, обязательный)
->
-> **Ответ `200 OK`:**
-> - `id`: `int`
-> - `title`: `string`
-> - `description`: `string | null`
-> - `priority`: `int`
-> - `created_at`: `string` (ISO 8601)
->
-> **Логика:**
-> - Если задача найдена — вернуть `TaskResponse`
-> - Если не найдена — `404 Not Found`
->
-> **Ограничения:**
-> - Использовать ранее определённые Pydantic-модели
-> - Не подключать реальную БД
-
----
-
-## Обработка ошибок
-
-### Сводка HTTP-кодов
-
-| Код | Сценарий | Кто формирует |
-|-----|----------|---------------|
-| `201` | Задача успешно создана | Эндпоинт `POST /tasks` |
-| `200` | Задача(и) найдены | Эндпоинты `GET` |
-| `404` | Задача не найдена | `HTTPException` в эндпоинте/сервисе |
-| `422` | Невалидные входные данные | FastAPI + Pydantic (автоматически) |
-
-### Промпт: генерация обработки ошибок
-
-> Дополни API обработкой ошибок.
->
-> **Требование:** если задача не найдена, вернуть JSON с кодом `404 Not Found`:
->
-> ```json
-> {
->   "detail": "Task not found",
->   "task_id": int
-> }
-> ```
->
-> **Ограничения:**
-> - Использовать встроенный `HTTPException` FastAPI
-> - Не реализовывать глобальный middleware
-
----
-
-## Реализация эндпоинтов
-
-```python
-# api/endpoints/tasks.py
-
-from fastapi import APIRouter, Depends, HTTPException, status
-
-from api.schemas import TaskCreate, TaskResponse
-from services.task import TaskService, get_task_service
-
-router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-
-@router.post(
-  "",
-  response_model=TaskResponse,
-  status_code=status.HTTP_201_CREATED,
-  summary="Создать задачу",
-)
-def create_task(
-  payload: TaskCreate,
-  service: TaskService = Depends(get_task_service),
-) -> TaskResponse:
-  return service.create_task(payload)
-
-
-@router.get(
-  "",
-  response_model=list[TaskResponse],
-  summary="Список задач",
-)
-def list_tasks(
-  service: TaskService = Depends(get_task_service),
-) -> list[TaskResponse]:
-  return service.list_tasks()
-
-
-@router.get(
-  "/{task_id}",
-  response_model=TaskResponse,
-  summary="Получить задачу по ID",
-)
-def get_task(
-  task_id: int,
-  service: TaskService = Depends(get_task_service),
-) -> TaskResponse:
-  task = service.get_task(task_id)
-  if task is None:
-    raise HTTPException(
-      status_code=404,
-      detail={"detail": "Task not found", "task_id": task_id},
-    )
-  return task
-```
-
-```python
-# api/router.py
-
-from fastapi import APIRouter
-from api.endpoints import tasks
-
-api_router = APIRouter()
-api_router.include_router(tasks.router)
-```
-
-```python
-# main.py
-
-from fastapi import FastAPI
-from api.router import api_router
-
-app = FastAPI(
-  title="Task Management API",
-  description="Минимальный REST API для управления задачами",
-  version="1.0.0",
-)
-app.include_router(api_router)
 ```
 
 ---
 
-## Health-check (опционально)
+## Коды ответов (сводка)
 
-### `GET /health`
+| Код | Когда возникает |
+|-----|-----------------|
+| **200** | Успешный `GET` |
+| **201** | Задача успешно создана |
+| **404** | Задача с указанным `task_id` не существует |
+| **422** | Невалидное тело запроса (`TaskCreate`) |
 
-```json
-{
-  "status": "ok"
-}
+Другие коды (401, 403, 500 с кастомной обработкой) в текущей реализации не используются.
+
+---
+
+## Интерактивная документация
+
+После запуска сервера:
+
+| URL | Инструмент |
+|-----|------------|
+| `/docs` | Swagger UI — можно вызывать эндпоинты из браузера |
+| `/redoc` | ReDoc — читаемая спецификация |
+| `/openapi.json` | Сырая OpenAPI 3.x схема |
+
+Тег OpenAPI для задач: **`tasks`**.
+
+---
+
+## Пример сценария использования
+
+```bash
+# 1. Проверить, что сервер жив
+curl http://localhost:8000/health
+
+# 2. Создать задачи
+curl -X POST http://localhost:8000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Изучить FastAPI", "priority": 5}'
+
+curl -X POST http://localhost:8000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Написать тесты", "description": "unit + integration", "priority": 4}'
+
+# 3. Получить список
+curl http://localhost:8000/tasks
+
+# 4. Получить задачу по ID
+curl http://localhost:8000/tasks/1
+
+# 5. Запрос несуществующей задачи
+curl -i http://localhost:8000/tasks/42
+# HTTP/1.1 404 Not Found
 ```
 
-Не обращается к хранилищу — только проверяет, что процесс API жив.
+---
+
+## Ограничения API
+
+- Нет эндпоинтов обновления (`PUT`/`PATCH`) и удаления (`DELETE`).
+- Нет query-параметров: фильтрация по приоритету, поиск по title, пагинация (`limit`/`offset`).
+- Нет заголовков `ETag`, `Last-Modified` для кэширования.
+- Данные не переживают перезапуск сервера.
+- При запуске нескольких воркеров uvicorn (`--workers N`) у каждого воркера своё хранилище — списки задач будут расходиться.

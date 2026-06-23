@@ -2,161 +2,158 @@
 
 ## Обзор
 
+Проект построен по классической трёхслойной схеме для небольшого FastAPI-приложения:
+
 ```
-┌──────────────┐   POST /tasks      ┌─────────────────┐
-│   Клиент     │ ─────────────────► │   FastAPI       │
-│ (curl, UI)   │   GET /tasks       │   api/          │
-│              │ ◄───────────────── │                 │
-└──────────────┘   GET /tasks/{id}  └────────┬────────┘
-                                             │
-                                    ┌────────▼────────┐
-                                    │  TaskService    │
-                                    │  services/      │
-                                    └────────┬────────┘
-                                             │
-                                    ┌────────▼────────┐
-                                    │ InMemoryStorage │
-                                    │  dict[int, Task]│
-                                    └─────────────────┘
+HTTP-запрос
+    │
+    ▼
+┌─────────────────┐
+│  api/endpoints  │  Маршрутизация, HTTP-коды, Depends()
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  services/task  │  Бизнес-логика (ID, created_at)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ services/storage│  In-memory dict
+└─────────────────┘
 ```
 
-## Слои и ответственность
+Слой `api/schemas.py` используется на всех уровнях как единый источник типов данных (DTO и доменная модель ответа совпадают — `TaskResponse`).
 
-### `api/` — транспортный слой
+## Технологический стек
 
-| Модуль | Назначение |
-|--------|------------|
-| `router.py` | Сборка маршрутов |
-| `schemas.py` | Pydantic DTO: `TaskCreate`, `TaskResponse` |
-| `endpoints/tasks.py` | HTTP-обработчики: создание, список, получение по ID |
+| Технология | Версия (мин.) | Роль |
+|------------|---------------|------|
+| **Python** | 3.11+ | Язык реализации |
+| **FastAPI** | 0.115+ | ASGI-фреймворк, маршрутизация, OpenAPI, DI |
+| **Uvicorn** | 0.32+ | ASGI-сервер для запуска приложения |
+| **Pydantic** | 2.9+ | Валидация и сериализация JSON (модели v2) |
+| **pydantic-settings** | 2.6+ | Конфигурация из env / `.env` |
+| **pytest** | 8.3+ | Тестовый фреймворк |
+| **httpx** | 0.28+ | HTTP-клиент (через `TestClient` FastAPI) |
 
-**Делает:**
+## Слои приложения
 
-- Принимает HTTP-запросы, возвращает HTTP-ответы.
-- Валидирует вход через Pydantic (`TaskCreate`).
-- Делегирует работу `TaskService`.
-- Преобразует «задача не найдена» в `HTTPException(404)`.
+### 1. Точка входа (`main.py`)
 
-**Не делает:** генерацию ID, хранение данных, бизнес-правил.
+- Создаёт `FastAPI` с метаданными (title, description, version).
+- Подключает `api_router` без глобального префикса — эндпоинты доступны с корня (`/tasks`, `/health`).
+- `GET /health` — простой liveness-check, не проходит через сервисный слой.
 
-### `services/` — бизнес-логика
+### 2. API-слой (`api/`)
 
-| Модуль | Назначение |
-|--------|------------|
-| `task.py` | `TaskService`: create, get, list |
-| `storage.py` | In-memory хранилище (`dict[int, TaskResponse]`) |
+**`router.py`** — композиция роутеров. Сейчас подключён только `tasks.router`.
 
-**Делает:**
+**`endpoints/tasks.py`** — тонкие контроллеры:
+- Принимают Pydantic-модели из тела запроса.
+- Получают `TaskService` через `Depends(get_task_service)`.
+- Преобразуют `None` от сервиса в `HTTPException(404)` с типизированным `detail`.
 
-- Генерирует монотонно возрастающий `id`.
-- Проставляет `created_at` при создании.
-- Ищет задачу по `task_id`, возвращает `None` если не найдена.
+**`schemas.py`** — контракты API. Отдельной ORM/доменной модели нет: `TaskResponse` одновременно служит и внутренним представлением задачи в хранилище.
 
-**Не делает:** работы с HTTP, чтения query/path-параметров.
+### 3. Сервисный слой (`services/`)
 
-### `config/` — конфигурация
+**`TaskService`** инкапсулирует операции над задачами:
+- `create_task` — выделяет ID через storage, ставит `created_at` в UTC, сохраняет.
+- `get_task` — проксирует в storage, возвращает `None` если не найдено.
+- `list_tasks` — возвращает все значения из storage.
 
-- `Settings` на базе `pydantic-settings` (опционально для MVP).
-- Параметры: `api_host`, `api_port`.
-- Единственная точка доступа к настройкам (`get_settings()` с кэшированием).
+**`get_task_service`** — фабрика для FastAPI Depends. Использует модульный синглтон `_storage`, общий для всего процесса.
+
+### 4. Слой хранения (`services/storage.py`)
+
+**`InMemoryStorage`** — простой репозиторий:
+- `_tasks: dict[int, TaskResponse]` — основное хранилище.
+- `_next_id` — счётчик для монотонной выдачи ID (1, 2, 3, …).
+- Методы: `save`, `get`, `list_all`, `next_id`.
+
+Интерфейс storage не абстрагирован через Protocol/ABC — прямая зависимость от `InMemoryStorage`, что соответствует учебному масштабу проекта.
+
+### 5. Конфигурация (`config/settings.py`)
+
+`Settings` на базе `BaseSettings`:
+- `api_host` (по умолчанию `0.0.0.0`)
+- `api_port` (по умолчанию `8000`)
+
+Кэшируется через `@lru_cache` в `get_settings()`. На момент текущей реализации настройки не интегрированы в `main.py` или uvicorn programmatically.
 
 ## Поток данных
 
 ### Создание задачи
 
-1. Клиент отправляет `TaskCreate` на `POST /tasks`.
-2. FastAPI валидирует тело запроса (Pydantic). При ошибке — `422`.
-3. `TaskService.create_task()`:
-   - инкрементирует счётчик ID;
-   - создаёт `TaskResponse` с `created_at=datetime.now(UTC)`;
-   - сохраняет в `InMemoryStorage`.
-4. API возвращает `201` с `TaskResponse`.
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Endpoint as POST /tasks
+    participant Service as TaskService
+    participant Storage as InMemoryStorage
 
-### Получение списка
-
-1. Клиент вызывает `GET /tasks`.
-2. `TaskService.list_tasks()` возвращает все значения из хранилища.
-3. API возвращает `200` с `list[TaskResponse]`.
-
-### Получение по ID
-
-1. Клиент вызывает `GET /tasks/{task_id}`.
-2. `TaskService.get_task(task_id)` ищет в хранилище.
-3. Если `None` — эндпоинт выбрасывает `HTTPException(404)` с телом `{"detail": "Task not found", "task_id": ...}`.
-4. Иначе — `200` с `TaskResponse`.
-
-## Зависимости между модулями
-
-```
-config/settings.py
-       │
-       ▼
-services/storage.py ◄── services/task.py
-       ▲                      │
-       │                      ▼
-       └──────────── api/endpoints/tasks.py
-                              │
-                              ▼
-                       api/schemas.py
-                              │
-                              ▼
-                          main.py
+    Client->>Endpoint: JSON body (TaskCreate)
+    Endpoint->>Endpoint: Pydantic validation
+    Endpoint->>Service: create_task(payload)
+    Service->>Storage: next_id()
+    Storage-->>Service: id
+    Service->>Service: build TaskResponse + created_at
+    Service->>Storage: save(task)
+    Storage-->>Service: task
+    Service-->>Endpoint: TaskResponse
+    Endpoint-->>Client: 201 + JSON
 ```
 
-**Правило:** зависимости направлены внутрь. `api/` зависит от `services/`, но не наоборот.
+### Получение задачи по ID
 
-## In-memory хранилище
+1. `GET /tasks/{task_id}` → `TaskService.get_task(task_id)`
+2. Storage ищет в `_tasks.get(task_id)`
+3. Если `None` → endpoint поднимает `HTTPException(404)` с `TaskNotFoundDetail`
+4. Иначе → `200` + `TaskResponse`
+
+## Dependency Injection
+
+FastAPI `Depends` используется для внедрения `TaskService`:
 
 ```python
-# services/storage.py
-
-class InMemoryStorage:
-  def __init__(self) -> None:
-    self._tasks: dict[int, TaskResponse] = {}
-    self._next_id: int = 1
-
-  def save(self, task: TaskResponse) -> TaskResponse:
-    self._tasks[task.id] = task
-    return task
-
-  def get(self, task_id: int) -> TaskResponse | None:
-    return self._tasks.get(task_id)
-
-  def list_all(self) -> list[TaskResponse]:
-    return list(self._tasks.values())
-
-  def next_id(self) -> int:
-    current = self._next_id
-    self._next_id += 1
-    return current
+def create_task(
+    payload: TaskCreate,
+    service: TaskService = Depends(get_task_service),
+) -> TaskResponse:
+    ...
 ```
 
-**Ограничения:**
+В тестах (`tests/conftest.py`) `get_task_service` переопределяется через `app.dependency_overrides`, чтобы каждый тест получал изолированный `InMemoryStorage`.
 
-- Данные не персистентны — теряются при перезапуске.
-- Не потокобезопасно (достаточно для учебного MVP).
-- Один экземпляр хранилища на процесс (singleton через `Depends`).
+## Тестовая архитектура
 
-## Инъекция зависимостей
+| Уровень | Файлы | Что проверяется |
+|---------|-------|-----------------|
+| Unit (модели) | `test_models.py` | Валидация `TaskCreate`, `TaskResponse` |
+| Unit (сервис) | `test_task_service.py` | Логика `TaskService` и `InMemoryStorage` |
+| Integration | `test_tasks_api.py` | Полный HTTP-цикл через `TestClient` |
 
-```python
-# services/task.py
+Изоляция достигается за счёт:
+- Отдельного `InMemoryStorage` на каждый тест (фикстура `storage`).
+- Подмены DI в `conftest.py` — продакшен-синглтон `_storage` в тестах не используется.
 
-_storage = InMemoryStorage()
+## OpenAPI / Swagger
 
+FastAPI автоматически генерирует спецификацию OpenAPI из:
+- type hints эндпоинтов,
+- `response_model`,
+- `responses={404: {"model": TaskNotFoundDetail}}`,
+- `Field(description=..., examples=...)` в схемах.
 
-def get_task_service() -> TaskService:
-  return TaskService(storage=_storage)
-```
+Доступ: `http://localhost:8000/docs` и `/redoc`.
 
-Один экземпляр хранилища разделяется между всеми запросами в рамках процесса.
+## Возможные направления развития
 
-## Расширение (вне scope MVP)
+Архитектура допускает расширение без переписывания слоёв:
 
-| Направление | Изменения |
-|-------------|-----------|
-| PostgreSQL | Заменить `InMemoryStorage` на репозиторий с SQLAlchemy/asyncpg |
-| Пагинация | `GET /tasks?offset=0&limit=20` |
-| Фильтрация | `GET /tasks?priority=5` |
-| Обновление/удаление | `PUT /tasks/{id}`, `DELETE /tasks/{id}` |
-| Аутентификация | Middleware или `Depends` с JWT |
+1. **Персистентность** — заменить `InMemoryStorage` на реализацию с SQLAlchemy/SQLite, сохранив интерфейс методов.
+2. **Новые операции** — добавить `update`/`delete` в `TaskService` и соответствующие эндпоинты.
+3. **Префикс API** — обернуть роутер в `APIRouter(prefix="/api/v1")` в `main.py`.
+4. **Middleware** — CORS, логирование, request ID.
+5. **Многопроцессность** — внешнее хранилище (Redis, PostgreSQL) вместо in-memory dict.

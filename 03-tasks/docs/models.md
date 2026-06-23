@@ -1,172 +1,145 @@
-# Модели и типы данных
+# Модели данных
 
-Все модели — **Pydantic v2**. Размещаются в `api/schemas.py`.
+Все модели определены в `api/schemas.py` на базе **Pydantic v2** (`BaseModel`). Отдельного слоя ORM или доменных сущностей нет — `TaskResponse` используется и как DTO ответа API, и как объект внутри хранилища.
 
-ORM не используется — только DTO для запросов и ответов.
+## Диаграмма связей
 
----
+```
+TaskCreate          TaskResponse
+(request DTO)       (response / storage model)
+─────────────       ──────────────────────────
+title        ───►   id            (генерируется сервисом)
+description  ───►   title
+priority     ───►   description
+                    priority
+                    created_at    (генерируется сервисом)
 
-## Входная модель
-
-### `TaskCreate`
-
-Модель тела запроса при создании задачи (`POST /tasks`).
-
-| Поле | Тип | Обязательное | Валидация | Описание |
-|------|-----|--------------|-----------|----------|
-| `title` | `string` | да | 3–100 символов | Название задачи |
-| `description` | `string` | нет | — | Описание задачи |
-| `priority` | `int` | да | 1–5 | Приоритет (1 — низкий, 5 — высокий) |
-
-```python
-from pydantic import BaseModel, Field
-
-
-class TaskCreate(BaseModel):
-  title: str = Field(
-    ...,
-    min_length=3,
-    max_length=100,
-    description="Название задачи",
-    examples=["Настроить CI/CD"],
-  )
-  description: str | None = Field(
-    default=None,
-    description="Описание задачи",
-    examples=["Добавить GitHub Actions для автотестов"],
-  )
-  priority: int = Field(
-    ...,
-    ge=1,
-    le=5,
-    description="Приоритет от 1 (низкий) до 5 (высокий)",
-    examples=[3],
-  )
+TaskNotFoundDetail  (только для ошибки 404)
+──────────────────
+detail
+task_id
 ```
 
-### Примеры валидации `TaskCreate`
+## TaskCreate — входной DTO
 
-| Вход | Результат |
-|------|-----------|
-| `title: "ab"` | `422` — слишком короткий заголовок |
-| `title: "a" * 101` | `422` — слишком длинный заголовок |
-| `priority: 0` | `422` — значение вне диапазона |
-| `priority: 6` | `422` — значение вне диапазона |
-| `description` отсутствует | `null` в ответе — поле опционально |
+Используется в теле запроса `POST /tasks`.
 
----
+| Поле | Тип | Обязательное | Ограничения | Описание |
+|------|-----|--------------|-------------|----------|
+| `title` | `str` | да | 3–100 символов | Название задачи |
+| `description` | `str \| None` | нет | — | Описание (по умолчанию `null`) |
+| `priority` | `int` | да | 1–5 | Приоритет: 1 — низкий, 5 — высокий |
 
-## Выходная модель
-
-### `TaskResponse`
-
-Модель ответа API. Содержит все поля `TaskCreate` плюс системные.
-
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `id` | `int` | Уникальный идентификатор (генерируется сервисом) |
-| `title` | `string` | Название задачи |
-| `description` | `string \| null` | Описание задачи |
-| `priority` | `int` | Приоритет 1–5 |
-| `created_at` | `datetime` | Время создания в формате ISO 8601 |
-
-```python
-from datetime import datetime
-
-from pydantic import BaseModel, Field
-
-
-class TaskResponse(BaseModel):
-  id: int = Field(..., description="Уникальный идентификатор задачи")
-  title: str = Field(..., min_length=3, max_length=100)
-  description: str | None = None
-  priority: int = Field(..., ge=1, le=5)
-  created_at: datetime = Field(..., description="Дата и время создания (ISO 8601)")
-
-  model_config = {"json_schema_extra": {
-    "examples": [{
-      "id": 1,
-      "title": "Настроить CI/CD",
-      "description": "Добавить GitHub Actions для автотестов",
-      "priority": 3,
-      "created_at": "2026-06-23T12:00:00",
-    }]
-  }}
-```
-
-### Сериализация `created_at`
-
-FastAPI сериализует `datetime` в ISO 8601 автоматически:
+### Пример валидного JSON
 
 ```json
-"created_at": "2026-06-23T12:00:00"
+{
+  "title": "Настроить CI/CD",
+  "description": "Добавить GitHub Actions для автотестов",
+  "priority": 3
+}
 ```
 
----
+Минимальный валидный запрос (без описания):
 
-## Внутренняя модель (опционально)
-
-При росте проекта можно выделить доменную сущность в `services/`:
-
-```python
-# services/models.py (опционально, не обязательно для MVP)
-
-from dataclasses import dataclass
-from datetime import datetime
-
-
-@dataclass
-class Task:
-  id: int
-  title: str
-  description: str | None
-  priority: int
-  created_at: datetime
+```json
+{
+  "title": "Test task",
+  "priority": 3
+}
 ```
 
-Для MVP достаточно `TaskResponse` как единственной модели сущности — маппинг выполняется в `TaskService`.
+### Ошибки валидации (422)
 
----
+FastAPI возвращает `422 Unprocessable Entity`, если:
 
-## Модель ошибки
+| Нарушение | Пример |
+|-----------|--------|
+| `title` короче 3 символов | `"ab"` |
+| `title` длиннее 100 символов | строка из 101+ символов |
+| `priority` вне диапазона 1–5 | `0`, `6`, `-1` |
+| отсутствует обязательное поле | нет `title` или `priority` |
+| неверный тип | `"priority": "high"` |
 
-### `TaskNotFoundDetail`
+Формат ответа — стандартный Pydantic/FastAPI `detail` со списком ошибок по полям.
 
-Структура тела ответа при `404 Not Found` (задача не найдена).
+## TaskResponse — ответ API и модель хранения
 
-```python
-class TaskNotFoundDetail(BaseModel):
-  detail: str = "Task not found"
-  task_id: int
+Возвращается при успешном `POST /tasks`, `GET /tasks`, `GET /tasks/{task_id}`.
+
+| Поле | Тип | Источник | Описание |
+|------|-----|----------|----------|
+| `id` | `int` | `InMemoryStorage.next_id()` | Уникальный идентификатор (автоинкремент с 1) |
+| `title` | `str` | из `TaskCreate` | 3–100 символов |
+| `description` | `str \| None` | из `TaskCreate` | Может быть `null` |
+| `priority` | `int` | из `TaskCreate` | 1–5 |
+| `created_at` | `datetime` | `datetime.now(timezone.utc)` | Время создания в UTC, ISO 8601 в JSON |
+
+### Пример ответа
+
+```json
+{
+  "id": 1,
+  "title": "Настроить CI/CD",
+  "description": "Добавить GitHub Actions для автотестов",
+  "priority": 3,
+  "created_at": "2026-06-23T12:00:00.123456+00:00"
+}
 ```
 
-Используется при выбросе `HTTPException`:
+Поля `id` и `created_at` клиент **не передаёт** — они назначаются на сервере в `TaskService.create_task`.
 
-```python
-raise HTTPException(
-  status_code=404,
-  detail={"detail": "Task not found", "task_id": task_id},
-)
+### Сериализация datetime
+
+Pydantic v2 сериализует `datetime` в ISO 8601. Точный формат дробной части секунд зависит от микросекунд момента создания.
+
+## TaskNotFoundDetail — схема ошибки 404
+
+Используется в `responses={404: {"model": TaskNotFoundDetail}}` для документации OpenAPI и как структура `detail` при `HTTPException`.
+
+| Поле | Тип | По умолчанию | Описание |
+|------|-----|--------------|----------|
+| `detail` | `str` | `"Task not found"` | Текстовое сообщение |
+| `task_id` | `int` | — | ID, по которому задача не найдена |
+
+### Пример ответа 404
+
+```json
+{
+  "detail": {
+    "detail": "Task not found",
+    "task_id": 999
+  }
+}
 ```
 
----
+> **Замечание:** из-за особенностей FastAPI `HTTPException(detail=...)` поле `detail` в корне JSON оборачивает объект `TaskNotFoundDetail`. Это отражено в интеграционном тесте `test_get_task_not_found`.
 
-## Промпт: генерация моделей данных
+## Маппинг слоёв
 
-> Сгенерируй Pydantic-модели для системы управления задачами.
->
-> **Модели:**
-> - `TaskCreate` — входные данные (тело запроса)
-> - `TaskResponse` — выходные данные (тело ответа)
->
-> **Поля:**
-> - `title`: `string`, обязательное, длина 3–100 символов
-> - `description`: `string`, необязательное
-> - `priority`: `int`, обязательное, диапазон 1–5
-> - `created_at`: `datetime`, только в `TaskResponse`, формат ISO 8601
-> - `id`: `int`, только в `TaskResponse`
->
-> **Ограничения:**
-> - Использовать Pydantic
-> - Применить валидацию полей
-> - Не использовать ORM
+| Слой | Модель | Направление |
+|------|--------|-------------|
+| HTTP request body | `TaskCreate` | Client → API |
+| HTTP response body | `TaskResponse` | API → Client |
+| Service input | `TaskCreate` | Endpoint → Service |
+| Service output | `TaskResponse` | Service → Endpoint |
+| Storage | `TaskResponse` | Service ↔ Storage |
+| HTTP error 404 | `TaskNotFoundDetail` | Endpoint → Client |
+
+Отдельных моделей `TaskUpdate`, `TaskListResponse` (с пагинацией) или внутренних entity-классов в проекте нет.
+
+## Валидация на уровне кода
+
+Валидация входных данных выполняется **до** вызова сервиса — FastAPI/Pydantic проверяют `TaskCreate` при парсинге тела запроса.
+
+`TaskResponse` валидируется при создании в `TaskService` и при десериализации ответа в тестах. Поля `title` и `priority` в ответе дублируют ограничения `TaskCreate`, что защищает от некорректных данных при прямой записи в storage (в текущем коде запись идёт только из сервиса).
+
+## Тестовое покрытие моделей
+
+Файл `tests/unit/test_models.py` проверяет:
+
+- валидный `TaskCreate` с опциональным `description`;
+- отклонение короткого/пустого `title`;
+- отклонение слишком длинного `title` (>100);
+- отклонение `priority` вне 1–5;
+- создание валидного `TaskResponse`.

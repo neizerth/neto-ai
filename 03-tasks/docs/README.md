@@ -1,85 +1,143 @@
-# REST API для управления задачами
+# Task Management API
 
-Минимальный сервис на базе **FastAPI** и **Pydantic** для создания и получения задач в системе управления проектами. Хранение — **in-memory** (без подключения к БД).
-
-Публичные эндпоинты:
-
-- `POST /tasks` — создание задачи
-- `GET /tasks` — список всех задач
-- `GET /tasks/{task_id}` — получение задачи по идентификатору
+Минимальный REST API для управления задачами. Позволяет создавать задачи, получать список и читать задачу по идентификатору. Данные хранятся в памяти процесса — без базы данных и внешних зависимостей.
 
 ## Содержание документации
 
 | Документ | Описание |
 |----------|----------|
-| [architecture.md](./architecture.md) | Архитектура, структура каталогов, поток данных |
-| [models.md](./models.md) | Pydantic-модели DTO, валидация полей |
-| [api.md](./api.md) | Контракт API, коды ответов, примеры |
-| [development-plan.md](./development-plan.md) | Пошаговый план и промпты для поэтапной генерации кода |
+| [architecture.md](./architecture.md) | Архитектура, технологии, поток данных |
+| [models.md](./models.md) | Pydantic-модели, DTO, валидация |
+| [api.md](./api.md) | Контракт API, коды ответов, примеры запросов |
 
-## Быстрый старт (после реализации)
-
-```bash
-# 1. Установка зависимостей
-cd 03-tasks
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 2. Запуск API
-uvicorn main:app --reload --port 8000
-
-# 3. Интерактивная документация
-open http://localhost:8000/docs
-```
-
-## Целевая структура проекта
+## Структура проекта
 
 ```
 03-tasks/
-├── main.py                 # Точка входа FastAPI
-├── requirements.txt
-├── api/
-│   ├── __init__.py
-│   ├── router.py           # Регистрация маршрутов
-│   ├── schemas.py          # Pydantic DTO: TaskCreate, TaskResponse
+├── main.py                 # Точка входа: создание FastAPI-приложения, health-check
+├── requirements.txt        # Зависимости Python (FastAPI, Pydantic, pytest и др.)
+├── pytest.ini              # Конфигурация pytest (pythonpath = .)
+├── .gitignore              # Исключения для git (.env, .venv, __pycache__ и т.д.)
+│
+├── api/                    # HTTP-слой: маршруты и схемы запросов/ответов
+│   ├── router.py           # Корневой APIRouter, подключает эндпоинты
+│   ├── schemas.py          # Pydantic-модели (DTO): TaskCreate, TaskResponse, TaskNotFoundDetail
 │   └── endpoints/
-│       ├── __init__.py
-│       └── tasks.py        # POST /tasks, GET /tasks, GET /tasks/{task_id}
-├── services/
-│   ├── __init__.py
-│   ├── task.py             # Бизнес-логика: создание, поиск, список
-│   └── storage.py          # In-memory хранилище задач
+│       └── tasks.py        # CRUD-эндпоинты для /tasks
+│
+├── services/               # Бизнес-логика и хранилище
+│   ├── task.py             # TaskService: создание, чтение, список задач
+│   └── storage.py          # InMemoryStorage: словарь задач в RAM
+│
 ├── config/
-│   ├── __init__.py
-│   └── settings.py         # Настройки приложения (host, port)
+│   └── settings.py         # Настройки приложения (host, port) через pydantic-settings
+│
 ├── tests/
-│   ├── conftest.py
-│   ├── unit/
+│   ├── conftest.py         # Фикстуры pytest: изолированное хранилище и TestClient
+│   ├── unit/               # Юнит-тесты моделей и сервиса
 │   │   ├── test_models.py
 │   │   └── test_task_service.py
-│   └── integration/
+│   └── integration/        # Интеграционные тесты HTTP API
 │       └── test_tasks_api.py
-└── docs/                   # Эта документация
+│
+└── docs/                   # Документация проекта
 ```
 
-## Ключевые решения
+### Краткое описание модулей
 
-- **Без БД** — задачи хранятся в памяти процесса (`dict[int, Task]`). Данные теряются при перезапуске.
-- **Разделение слоёв** — API валидирует HTTP и DTO; сервис управляет бизнес-логикой; хранилище инкапсулирует доступ к данным.
-- **Pydantic v2** — входные и выходные модели с декларативной валидацией (`Field`, `ge`/`le`, `min_length`/`max_length`).
-- **HTTPException** — ошибки «задача не найдена» через встроенный механизм FastAPI, без глобального middleware.
-- **Без ORM** — только Pydantic-модели, без SQLAlchemy и аналогов.
+| Путь | Назначение |
+|------|------------|
+| `main.py` | Создаёт экземпляр `FastAPI`, подключает `api_router`, экспортирует эндпоинт `GET /health`. |
+| `api/router.py` | Агрегирует роутеры эндпоинтов в единый `api_router`. |
+| `api/schemas.py` | Контракты данных: входные DTO, ответы API, схема ошибки 404. |
+| `api/endpoints/tasks.py` | Три эндпоинта: `POST /tasks`, `GET /tasks`, `GET /tasks/{task_id}`. |
+| `services/task.py` | Генерация ID, проставление `created_at`, делегирование в хранилище. |
+| `services/storage.py` | In-memory `dict[int, TaskResponse]` с автоинкрементом ID. |
+| `config/settings.py` | Чтение `api_host` и `api_port` из переменных окружения / `.env`. |
+| `tests/conftest.py` | Подмена `get_task_service` через `dependency_overrides` для изоляции тестов. |
 
-## Кейс (сценарий)
+## Быстрый старт
 
-Спроектировать минимальный REST API для управления задачами в системе управления проектами:
+### Требования
 
-1. Pydantic-модели для задачи (`TaskCreate`, `TaskResponse`).
-2. `POST`-эндпоинт для создания задачи.
-3. `GET`-эндпоинт для получения задачи по идентификатору.
-4. `GET`-эндпоинт для получения списка задач.
-5. Обработка ошибки «задача не найдена».
-6. Реализация **без подключения к базе данных**.
+- Python 3.11+ (в проекте используется 3.13)
+- pip
 
-Цель разбора — показать, как структурированные промпты пошагово генерируют модели, эндпоинты, обработку ошибок и архитектурные ограничения.
+### Установка и запуск
+
+```bash
+cd 03-tasks
+
+# Виртуальное окружение
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+# Зависимости
+pip install -r requirements.txt
+
+# Запуск сервера
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Опционально можно задать переменные в файле `.env`:
+
+```env
+API_HOST=0.0.0.0
+API_PORT=8000
+```
+
+> **Примечание:** `Settings` определены в `config/settings.py`, но `main.py` пока не использует их для запуска uvicorn — хост и порт задаются аргументами командной строки.
+
+### Проверка работоспособности
+
+```bash
+# Health-check
+curl http://localhost:8000/health
+
+# Интерактивная документация
+open http://localhost:8000/docs      # Swagger UI
+open http://localhost:8000/redoc    # ReDoc
+```
+
+### Запуск тестов
+
+```bash
+pytest
+pytest -v                           # подробный вывод
+pytest tests/unit/                  # только юнит-тесты
+pytest tests/integration/           # только интеграционные
+```
+
+## Использование API (кратко)
+
+```bash
+# Создать задачу
+curl -X POST http://localhost:8000/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Настроить CI/CD", "description": "GitHub Actions", "priority": 3}'
+
+# Список задач
+curl http://localhost:8000/tasks
+
+# Задача по ID
+curl http://localhost:8000/tasks/1
+```
+
+Подробные примеры, коды ответов и схемы — в [api.md](./api.md).
+
+## Ограничения
+
+| Ограничение | Описание |
+|-------------|----------|
+| In-memory хранилище | Данные теряются при перезапуске процесса. Нет персистентности. |
+| Только чтение и создание | Нет `PUT`/`PATCH`/`DELETE` — задачи нельзя обновить или удалить. |
+| Один процесс | Глобальный синглтон `_storage` в `services/task.py` не рассчитан на несколько воркеров uvicorn с раздельной памятью. |
+| Нет аутентификации | API открыт, без авторизации и rate limiting. |
+| Нет пагинации и фильтрации | `GET /tasks` возвращает все задачи целиком, без сортировки. |
+| Нет валидации `task_id` | Отрицательные или нулевые ID принимаются в path, но задача не будет найдена (404). |
+| Настройки не подключены к запуску | `config/settings.py` существует, но `main.py` не читает host/port из настроек автоматически. |
+| Нет CORS middleware | Для вызова из браузера с другого origin потребуется добавить `CORSMiddleware`. |
+
+## Версия API
+
+Версия приложения: **1.0.0** (задаётся в `main.py`).
